@@ -57,6 +57,68 @@ export type WorkspacePayload = {
       completenessRate?: number;
     };
   };
+  companyAnalysis?: {
+    pipeline: Array<{
+      step: string;
+      status: "Ready" | "Caution" | "Needs review" | "Blocked" | "Missing" | string;
+      detail: string;
+    }>;
+    dictionary: Array<{
+      field: string;
+      source: string;
+      businessName: string;
+      definition: string;
+      status: string;
+      evidence: string;
+      availableInCurrentSheet: boolean;
+    }>;
+    eda: {
+      monthly: Array<{
+        month: string;
+        revenue: number | null;
+        quantity: number | null;
+        wholesaleUnits: number | null;
+        pnvw: number | null;
+        accessoryUnitsPerVehicle: number | null;
+      }>;
+      topModelCodes: Array<{ name: string; value: number }>;
+      topParts: Array<{ name: string; value: number }>;
+      notes: string[];
+    };
+    keyMetrics: {
+      totalRevenue: number | null;
+      totalQuantity: number | null;
+      averageAccessoryPrice: number | null;
+      wholesaleUnits: number | null;
+      pnvw: number | null;
+      accessoryUnitsPerVehicle: number | null;
+      reportingBasis: string;
+    };
+    joinValidation: {
+      modelCode: {
+        salesCodeCount: number;
+        wholesaleCodeCount: number;
+        matchedCodeCount: number;
+        coveragePct: number | null;
+        unmatchedSalesCodes: string[];
+        extraWholesaleCodes: string[];
+      };
+      brand: {
+        rawCounts: Record<string, number>;
+        mapping: Record<string, string>;
+        recognizedPct: number | null;
+      };
+      unitPrice: {
+        validRows: number;
+        zeroQuantityRows: number;
+        negativeQuantityRows: number;
+        negativeRevenueRows: number;
+        median: number | null;
+        p05: number | null;
+        p95: number | null;
+      };
+    };
+  };
   table: {
     columns: Array<{ key: string; title: string; role: string; type: string }>;
     rows: Array<Record<string, string | number | null>>;
@@ -316,6 +378,14 @@ export function formatMetric(value: number | null, currency = false) {
   return currency
     ? new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(value)
     : new Intl.NumberFormat("en-US", { maximumFractionDigits: 0 }).format(value);
+}
+
+export function formatDecimal(value: number | null, digits = 2) {
+  if (value === null || Number.isNaN(value)) return "N/A";
+  return new Intl.NumberFormat("en-US", {
+    minimumFractionDigits: digits,
+    maximumFractionDigits: digits,
+  }).format(value);
 }
 
 export function chartOption(title: string, labels: string[], values: number[], kind: "line" | "bar" | "area") {

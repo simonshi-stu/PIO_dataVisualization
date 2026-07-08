@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 import pickle
+import re
 import threading
+import hashlib
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from io import BytesIO, StringIO
@@ -49,6 +51,14 @@ SUPPORTING_FIELD_LABELS = {
     "PIS_SERI": "Series",
     "YYYYMM": "Year-Month",
 }
+
+COMPANY_MONTH_NUMBERS = {
+    "Jan": 1, "Feb": 2, "Mar": 3, "Apr": 4, "May": 5, "Jun": 6,
+    "Jul": 7, "Aug": 8, "Sep": 9, "Oct": 10, "Nov": 11, "Dec": 12,
+}
+COMPANY_MONTH_COL_RE = re.compile(
+    r"^(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)(?:\s*\((\d+)\))?$"
+)
 
 FIELD_GROUPS = {
     "date": "Time",
@@ -99,23 +109,36 @@ def _save_index(entries: list[dict]) -> None:
     INDEX_FILE.write_text(json.dumps(entries, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def _find_existing_workbook(file_hash: str) -> dict[str, Any] | None:
+    for entry in _load_index():
+        if entry.get("fileHash") != file_hash:
+            continue
+        workbook_path = OUTPUTS_DIR / f"{entry['id']}.xlsx"
+        if workbook_path.exists():
+            return entry
+    return None
+
+
 def _bundle_cache_path(workbook_id: str, sheet_name: str) -> Path:
     # Ensure sheet_name doesn't contain path traversal characters
     safe_name = "".join(c for c in sheet_name if c.isalnum() or c in ("-", "_")).rstrip()
     return OUTPUTS_DIR / f"{workbook_id}_{safe_name}_bundle.pkl"
 
 
-def _add_to_index(workbook_id: str, filename: str, sheet_names: list[str]) -> None:
+def _add_to_index(workbook_id: str, filename: str, sheet_names: list[str], file_hash: str | None = None) -> None:
     entries = _load_index()
     # Remove duplicate
     entries = [e for e in entries if e["id"] != workbook_id]
-    entries.insert(0, {
+    entry = {
         "id": workbook_id,
         "filename": filename,
         "sheetNames": sheet_names,
         "defaultSheet": sheet_names[0] if sheet_names else None,
         "uploadedAt": datetime.now(timezone.utc).isoformat(),
-    })
+    }
+    if file_hash:
+        entry["fileHash"] = file_hash
+    entries.insert(0, entry)
     # Evict oldest beyond MAX_WORKBOOKS
     old = entries[MAX_WORKBOOKS:]
     entries = entries[:MAX_WORKBOOKS]
@@ -183,11 +206,44 @@ async def upload_workbook(file: UploadFile = File(...)) -> dict[str, Any]:
     if not sheet_names:
         raise HTTPException(status_code=400, detail="The uploaded workbook does not contain any sheets.")
 
+    file_hash = hashlib.sha256(file_bytes).hexdigest()
+    existing_entry = _find_existing_workbook(file_hash)
+    if existing_entry:
+        workbook_id = existing_entry["id"]
+        if workbook_id not in WORKBOOKS:
+            workbook_path = OUTPUTS_DIR / f"{workbook_id}.xlsx"
+            WORKBOOKS[workbook_id] = WorkbookSession(
+                workbook_id=workbook_id,
+                filename=existing_entry["filename"],
+                file_bytes=workbook_path.read_bytes(),
+                sheet_names=existing_entry["sheetNames"],
+            )
+
+        default_sheet = existing_entry.get("defaultSheet") or existing_entry["sheetNames"][0]
+        if _bundle_cache_path(workbook_id, default_sheet).exists():
+            WORKBOOK_STATUS[workbook_id] = "ready"
+        elif WORKBOOK_STATUS.get(workbook_id) != "processing":
+            WORKBOOK_STATUS[workbook_id] = "processing"
+            thread = threading.Thread(
+                target=_process_workbook_background,
+                args=(workbook_id,),
+                daemon=True,
+            )
+            thread.start()
+
+        return {
+            "workbookId": workbook_id,
+            "filename": existing_entry["filename"],
+            "sheetNames": existing_entry["sheetNames"],
+            "defaultSheet": default_sheet,
+            "reused": True,
+        }
+
     workbook_id = uuid4().hex
 
     # ── Phase 1: persist to disk and return immediately ───────────────────────
     (OUTPUTS_DIR / f"{workbook_id}.xlsx").write_bytes(file_bytes)
-    _add_to_index(workbook_id, file.filename, sheet_names)
+    _add_to_index(workbook_id, file.filename, sheet_names, file_hash=file_hash)
 
     session = WorkbookSession(
         workbook_id=workbook_id,
@@ -313,6 +369,7 @@ def get_workspace(
     sort_order: str = Query(default=""),
     start_date: str = Query(default=""),
     end_date: str = Query(default=""),
+    include_company_analysis: bool = Query(default=False),
 ) -> dict[str, Any]:
     session = _get_session(workbook_id)
     return _build_workspace_payload(
@@ -331,6 +388,7 @@ def get_workspace(
         sort_order=sort_order,
         start_date=start_date,
         end_date=end_date,
+        include_company_analysis=include_company_analysis,
     )
 
 
@@ -607,6 +665,7 @@ def _build_workspace_payload(
     sort_order: str = "",
     start_date: str = "",
     end_date: str = "",
+    include_company_analysis: bool = False,
 ) -> dict[str, Any]:
     bundle = _get_bundle(session, sheet_name)
     if bundle.dataframe.empty:
@@ -632,7 +691,7 @@ def _build_workspace_payload(
         sort_field=sort_field,
         sort_order=sort_order,
     )
-    return {
+    payload = {
         "workbook": {
             "id": session.workbook_id,
             "filename": session.filename,
@@ -669,6 +728,9 @@ def _build_workspace_payload(
             end_date=end_date,
         ),
     }
+    if include_company_analysis:
+        payload["companyAnalysis"] = _build_company_analysis(session, sheet_name, bundle, filtered)
+    return payload
 
 
 def _get_column_profile(bundle: DatasetBundle) -> pd.DataFrame:
@@ -771,6 +833,500 @@ def _build_overview(
         "leaders": leaders,
         "stats": stats,
     }
+
+
+def _build_company_analysis(
+    session: WorkbookSession,
+    sheet_name: str,
+    bundle: DatasetBundle,
+    filtered_df: pd.DataFrame,
+) -> dict[str, Any]:
+    sales_cols = _resolve_sales_columns(bundle)
+    wholesale_bundle = _find_wholesale_bundle(session, exclude_sheet=sheet_name)
+    start_year = _infer_start_year(session, exclude_sheet=sheet_name)
+    wholesale_long = _prepare_wholesale_by_code(wholesale_bundle, start_year)
+
+    validation = _build_definition_validation(bundle, wholesale_long)
+    monthly = _build_monthly_company_metrics(bundle, filtered_df, sales_cols, wholesale_long)
+    key_metrics = _summarize_company_key_metrics(filtered_df, sales_cols, monthly)
+    dictionary = _build_company_dictionary(bundle, sales_cols, validation)
+    pipeline = _build_pipeline_status(bundle, sales_cols, validation, monthly, wholesale_bundle)
+    eda = _build_company_eda(filtered_df, sales_cols, monthly)
+
+    return {
+        "pipeline": pipeline,
+        "dictionary": dictionary,
+        "eda": eda,
+        "keyMetrics": key_metrics,
+        "joinValidation": validation,
+    }
+
+
+def _resolve_sales_columns(bundle: DatasetBundle) -> dict[str, str | None]:
+    columns = set(bundle.dataframe.columns)
+    return {
+        "date": bundle.roles.get("date"),
+        "brand": "PIS_CMP_KND" if "PIS_CMP_KND" in columns else bundle.roles.get("brand"),
+        "modelCode": "PIS_SERI" if "PIS_SERI" in columns else None,
+        "model": bundle.roles.get("model"),
+        "modelYear": bundle.roles.get("model_year"),
+        "partNumber": bundle.roles.get("part_number"),
+        "partDescription": bundle.roles.get("part_description"),
+        "quantity": bundle.roles.get("installation_quantity"),
+        "revenue": bundle.roles.get("revenue"),
+    }
+
+
+def _build_definition_validation(
+    bundle: DatasetBundle,
+    wholesale_long: pd.DataFrame,
+) -> dict[str, Any]:
+    df = bundle.dataframe
+    cols = _resolve_sales_columns(bundle)
+    model_code_col = cols["modelCode"]
+    brand_col = cols["brand"]
+    qty_col = cols["quantity"]
+    revenue_col = cols["revenue"]
+
+    sales_codes: set[str] = set()
+    wholesale_codes: set[str] = set()
+    if model_code_col and model_code_col in df.columns:
+        sales_codes = set(df[model_code_col].dropna().astype(str).str.strip())
+        sales_codes.discard("")
+    if not wholesale_long.empty and "model_code" in wholesale_long.columns:
+        wholesale_codes = set(wholesale_long["model_code"].dropna().astype(str).str.strip())
+        wholesale_codes.discard("")
+
+    matched_codes = sales_codes & wholesale_codes
+    qty = pd.to_numeric(df[qty_col], errors="coerce") if qty_col and qty_col in df.columns else pd.Series(dtype="float64")
+    revenue = pd.to_numeric(df[revenue_col], errors="coerce") if revenue_col and revenue_col in df.columns else pd.Series(dtype="float64")
+    unit_price = revenue / qty.replace(0, pd.NA) if not qty.empty and not revenue.empty else pd.Series(dtype="float64")
+
+    brand_counts = {}
+    if brand_col and brand_col in df.columns:
+        brand_counts = {
+            str(key): int(value)
+            for key, value in df[brand_col].fillna("").astype(str).value_counts().to_dict().items()
+        }
+
+    coverage_pct = (len(matched_codes) / len(sales_codes) * 100) if sales_codes else None
+    return {
+        "modelCode": {
+            "salesCodeCount": len(sales_codes),
+            "wholesaleCodeCount": len(wholesale_codes),
+            "matchedCodeCount": len(matched_codes),
+            "coveragePct": float(coverage_pct) if coverage_pct is not None else None,
+            "unmatchedSalesCodes": sorted(sales_codes - wholesale_codes)[:12],
+            "extraWholesaleCodes": sorted(wholesale_codes - sales_codes)[:12],
+        },
+        "brand": {
+            "rawCounts": brand_counts,
+            "mapping": {"K": "KUS", "H": "HMA + GMA"},
+            "recognizedPct": _recognized_brand_pct(brand_counts),
+        },
+        "unitPrice": {
+            "validRows": int(unit_price.notna().sum()) if not unit_price.empty else 0,
+            "zeroQuantityRows": int((qty == 0).sum()) if not qty.empty else 0,
+            "negativeQuantityRows": int((qty < 0).sum()) if not qty.empty else 0,
+            "negativeRevenueRows": int((revenue < 0).sum()) if not revenue.empty else 0,
+            "median": _safe_float(unit_price.median()) if not unit_price.empty else None,
+            "p05": _safe_float(unit_price.quantile(0.05)) if not unit_price.empty else None,
+            "p95": _safe_float(unit_price.quantile(0.95)) if not unit_price.empty else None,
+        },
+    }
+
+
+def _recognized_brand_pct(brand_counts: dict[str, int]) -> float | None:
+    total = sum(brand_counts.values())
+    if not total:
+        return None
+    recognized = sum(count for brand, count in brand_counts.items() if brand in {"H", "K"})
+    return float(recognized / total * 100)
+
+
+def _prepare_wholesale_by_code(
+    wholesale_bundle: DatasetBundle | None,
+    start_year: int | None,
+) -> pd.DataFrame:
+    if wholesale_bundle is None or wholesale_bundle.dataframe.empty:
+        return pd.DataFrame(columns=["brand", "model", "model_code", "channel", "month", "units"])
+
+    df = wholesale_bundle.dataframe
+    month_cols = _company_month_columns(df)
+    brand_col = _company_named_column(df, "brand")
+    model_col = _company_named_column(df, "model")
+    model_code_col = _company_named_column(df, "model code")
+    if not month_cols or not model_col or not model_code_col:
+        return pd.DataFrame(columns=["brand", "model", "model_code", "channel", "month", "units"])
+
+    work = df.reset_index(drop=True)
+    raw_brand = work[brand_col].astype(str) if brand_col else pd.Series("", index=work.index)
+    channel = pd.Series("Wholesale", index=work.index)
+    fleet_hits = work.index[raw_brand.str.contains("fleet", case=False, na=False)]
+    if len(fleet_hits) > 0:
+        channel.iloc[int(fleet_hits[0]):] = "Fleet"
+
+    is_label = (
+        raw_brand.str.contains("total|fleet", case=False, na=False)
+        | (raw_brand.str.strip().str.lower() == "brand")
+        | raw_brand.isin(["", "nan", "NaN", "None"])
+    )
+    brand = work[brand_col].where(~is_label).ffill() if brand_col else pd.Series("", index=work.index)
+    model = work[model_col].astype(str).str.strip()
+    model_code = work[model_code_col].astype(str).str.strip()
+    keep = (
+        model.ne("")
+        & model.str.lower().ne("model")
+        & model_code.ne("")
+        & model_code.str.lower().ne("model code")
+    )
+
+    frames: list[pd.DataFrame] = []
+    for col in month_cols:
+        match = COMPANY_MONTH_COL_RE.match(str(col).strip())
+        if not match:
+            continue
+        group_index = int(match.group(2) or "1")
+        month_ts = pd.Timestamp(
+            year=(start_year or 2025) + group_index - 1,
+            month=COMPANY_MONTH_NUMBERS[match.group(1)],
+            day=1,
+        )
+        sub = pd.DataFrame(
+            {
+                "brand": brand,
+                "model": model,
+                "model_code": model_code,
+                "channel": channel,
+                "units": pd.to_numeric(work[col], errors="coerce"),
+            }
+        )[keep]
+        sub["month"] = month_ts
+        sub = sub[sub["units"].notna()]
+        frames.append(sub)
+
+    if not frames:
+        return pd.DataFrame(columns=["brand", "model", "model_code", "channel", "month", "units"])
+    long_df = pd.concat(frames, ignore_index=True)
+    long_df["brand"] = long_df["brand"].fillna("").astype(str).str.strip()
+    long_df["model_code"] = long_df["model_code"].fillna("").astype(str).str.strip()
+    return long_df[long_df["model_code"] != ""]
+
+
+def _company_month_columns(df: pd.DataFrame) -> list[str]:
+    return [c for c in df.columns if COMPANY_MONTH_COL_RE.match(str(c).strip())]
+
+
+def _company_named_column(df: pd.DataFrame, name: str) -> str | None:
+    return next((c for c in df.columns if str(c).strip().lower() == name), None)
+
+
+def _build_monthly_company_metrics(
+    bundle: DatasetBundle,
+    filtered_df: pd.DataFrame,
+    cols: dict[str, str | None],
+    wholesale_long: pd.DataFrame,
+) -> pd.DataFrame:
+    date_col = cols["date"]
+    model_code_col = cols["modelCode"]
+    qty_col = cols["quantity"]
+    revenue_col = cols["revenue"]
+    brand_col = cols["brand"]
+    if (
+        filtered_df.empty
+        or not date_col
+        or date_col not in bundle.date_candidates
+        or not model_code_col
+        or model_code_col not in filtered_df.columns
+        or not qty_col
+        or qty_col not in filtered_df.columns
+        or not revenue_col
+        or revenue_col not in filtered_df.columns
+    ):
+        return pd.DataFrame(columns=["month", "revenue", "quantity", "wholesaleUnits", "pnvw", "accessoryUnitsPerVehicle"])
+
+    working = filtered_df.copy()
+    working["__month"] = bundle.date_candidates[date_col].loc[working.index].dt.to_period("M").dt.to_timestamp()
+    working["__model_code"] = working[model_code_col].fillna("").astype(str).str.strip()
+    working["__quantity"] = pd.to_numeric(working[qty_col], errors="coerce").fillna(0.0)
+    working["__revenue"] = pd.to_numeric(working[revenue_col], errors="coerce").fillna(0.0)
+    working["__brand_code"] = working[brand_col].fillna("").astype(str).str.strip() if brand_col and brand_col in working.columns else ""
+    working = working[(working["__month"].notna()) & (working["__model_code"] != "")]
+
+    sales_monthly = (
+        working.groupby(["__month", "__brand_code", "__model_code"], dropna=True)
+        .agg(revenue=("__revenue", "sum"), quantity=("__quantity", "sum"))
+        .reset_index()
+        .rename(columns={"__month": "month", "__brand_code": "brand_code", "__model_code": "model_code"})
+    )
+    if sales_monthly.empty:
+        return pd.DataFrame(columns=["month", "revenue", "quantity", "wholesaleUnits", "pnvw", "accessoryUnitsPerVehicle"])
+
+    if not wholesale_long.empty:
+        wholesale = wholesale_long.copy()
+        wholesale["month"] = pd.to_datetime(wholesale["month"], errors="coerce")
+        wholesale["units"] = pd.to_numeric(wholesale["units"], errors="coerce").fillna(0.0)
+        wholesale = wholesale[wholesale["channel"].fillna("").astype(str).str.lower() == "wholesale"]
+        wholesale["brand_code"] = _wholesale_brand_code_series(wholesale["brand"])
+        wholesale_monthly = (
+            wholesale.groupby(["month", "brand_code", "model_code"], dropna=True)["units"]
+            .sum()
+            .reset_index()
+            .rename(columns={"units": "wholesaleUnits"})
+        )
+        joined = sales_monthly.merge(wholesale_monthly, how="left", on=["month", "brand_code", "model_code"])
+    else:
+        joined = sales_monthly.copy()
+        joined["wholesaleUnits"] = pd.NA
+
+    monthly = (
+        joined.groupby("month", dropna=True)
+        .agg(revenue=("revenue", "sum"), quantity=("quantity", "sum"), wholesaleUnits=("wholesaleUnits", "sum"))
+        .reset_index()
+        .sort_values("month")
+    )
+    monthly["wholesaleUnits"] = monthly["wholesaleUnits"].where(monthly["wholesaleUnits"] > 0, pd.NA)
+    monthly["pnvw"] = monthly["revenue"] / monthly["wholesaleUnits"]
+    monthly["accessoryUnitsPerVehicle"] = monthly["quantity"] / monthly["wholesaleUnits"]
+    monthly["monthLabel"] = monthly["month"].dt.strftime("%Y-%m")
+    return monthly
+
+
+def _summarize_company_key_metrics(
+    filtered_df: pd.DataFrame,
+    cols: dict[str, str | None],
+    monthly: pd.DataFrame,
+) -> dict[str, Any]:
+    qty_col = cols["quantity"]
+    revenue_col = cols["revenue"]
+    total_qty = _safe_float(pd.to_numeric(filtered_df[qty_col], errors="coerce").sum()) if qty_col and qty_col in filtered_df.columns else None
+    total_revenue = _safe_float(pd.to_numeric(filtered_df[revenue_col], errors="coerce").sum()) if revenue_col and revenue_col in filtered_df.columns else None
+    avg_unit_price = (total_revenue / total_qty) if total_revenue is not None and total_qty else None
+
+    wholesale_total = None
+    pnvw = None
+    units_per_vehicle = None
+    if not monthly.empty and "wholesaleUnits" in monthly.columns:
+        wholesale_series = pd.to_numeric(monthly["wholesaleUnits"], errors="coerce")
+        if wholesale_series.notna().any():
+            wholesale_total = _safe_float(wholesale_series.sum())
+            if wholesale_total:
+                pnvw = (total_revenue or 0.0) / wholesale_total
+                units_per_vehicle = (total_qty or 0.0) / wholesale_total
+
+    return {
+        "totalRevenue": total_revenue,
+        "totalQuantity": total_qty,
+        "averageAccessoryPrice": _safe_float(avg_unit_price),
+        "wholesaleUnits": _safe_float(wholesale_total),
+        "pnvw": _safe_float(pnvw),
+        "accessoryUnitsPerVehicle": _safe_float(units_per_vehicle),
+        "reportingBasis": "PNVW = PIO revenue / wholesale vehicles; accessory unit rate = PIO accessory units / wholesale vehicles.",
+    }
+
+
+def _build_company_dictionary(
+    bundle: DatasetBundle,
+    cols: dict[str, str | None],
+    validation: dict[str, Any],
+) -> list[dict[str, Any]]:
+    rows = [
+        {
+            "field": "PIS_SERI",
+            "source": "PIO_Sales_Data",
+            "businessName": "Model code join key",
+            "definition": "Vehicle model code used to bridge PIO sales with Vehicle_Wholesale_Data.Model Code.",
+            "status": "Verified" if validation["modelCode"]["matchedCodeCount"] else "Needs review",
+            "evidence": _coverage_text(validation["modelCode"]["coveragePct"]),
+        },
+        {
+            "field": "PIS_CMP_KND",
+            "source": "PIO_Sales_Data",
+            "businessName": "Company brand code",
+            "definition": "K maps to KUS. H maps to the combined Hyundai/Genesis group, HMA + GMA.",
+            "status": "Verified" if validation["brand"]["recognizedPct"] == 100.0 else "Needs review",
+            "evidence": f"Observed values: {_brand_counts_text(validation['brand']['rawCounts'])}.",
+        },
+        {
+            "field": "SumOfPIS_CRP_CFM_PRI",
+            "source": "PIO_Sales_Data",
+            "businessName": "PIO sales revenue",
+            "definition": "Total confirmed price for the aggregated accessory sale row.",
+            "status": "Verified" if validation["unitPrice"]["negativeRevenueRows"] == 0 else "Needs review",
+            "evidence": f"{validation['unitPrice']['negativeRevenueRows']} negative revenue rows detected.",
+        },
+        {
+            "field": "SumOfPIS_INST_QT",
+            "source": "PIO_Sales_Data",
+            "businessName": "Installation quantity",
+            "definition": "Accessory units in the aggregated sales row. Meeting notes say this field has +/- 1 week reporting risk, so use carefully for forecasting.",
+            "status": "Caution",
+            "evidence": f"{validation['unitPrice']['zeroQuantityRows']} zero-quantity rows; invoice files should replace or validate this field later.",
+        },
+        {
+            "field": "Unit accessory price",
+            "source": "Derived",
+            "businessName": "Accessory unit price",
+            "definition": "SumOfPIS_CRP_CFM_PRI / SumOfPIS_INST_QT.",
+            "status": "Verified" if validation["unitPrice"]["validRows"] else "Needs review",
+            "evidence": (
+                f"Median ${validation['unitPrice']['median']:.2f}; "
+                f"5th-95th percentile ${validation['unitPrice']['p05']:.2f}-${validation['unitPrice']['p95']:.2f}."
+                if validation["unitPrice"]["median"] is not None
+                else "No valid unit price rows detected."
+            ),
+        },
+        {
+            "field": "Model Code",
+            "source": "Vehicle_Wholesale_Data",
+            "businessName": "Wholesale model denominator key",
+            "definition": "Monthly wholesale vehicle volume denominator for PNVW and accessory units per vehicle.",
+            "status": "Verified" if validation["modelCode"]["wholesaleCodeCount"] else "Missing",
+            "evidence": f"{validation['modelCode']['wholesaleCodeCount']} wholesale model codes detected.",
+        },
+    ]
+    available_fields = set(bundle.dataframe.columns)
+    return [
+        {**row, "availableInCurrentSheet": row["field"] in available_fields or row["source"] == "Derived"}
+        for row in rows
+    ]
+
+
+def _build_pipeline_status(
+    bundle: DatasetBundle,
+    cols: dict[str, str | None],
+    validation: dict[str, Any],
+    monthly: pd.DataFrame,
+    wholesale_bundle: DatasetBundle | None,
+) -> list[dict[str, str]]:
+    return [
+        {
+            "step": "1. Intake workbook",
+            "status": "Ready" if not bundle.dataframe.empty else "Blocked",
+            "detail": f"Current sheet parsed with {bundle.profile['row_count']:,} rows and {bundle.profile['column_count']} columns.",
+        },
+        {
+            "step": "2. Identify business fields",
+            "status": "Ready" if cols["modelCode"] and cols["quantity"] and cols["revenue"] else "Needs review",
+            "detail": "Detected model code, brand, revenue, quantity, part, and date fields for PIO analysis.",
+        },
+        {
+            "step": "3. Normalize company brand",
+            "status": "Ready" if validation["brand"]["recognizedPct"] == 100.0 else "Needs review",
+            "detail": "K -> KUS; H -> HMA + GMA.",
+        },
+        {
+            "step": "4. Bridge sales to wholesale",
+            "status": "Ready" if validation["modelCode"]["matchedCodeCount"] else "Blocked",
+            "detail": (
+                f"{validation['modelCode']['matchedCodeCount']} of {validation['modelCode']['salesCodeCount']} sales model codes match wholesale Model Code."
+            ),
+        },
+        {
+            "step": "5. Build monthly metric layer",
+            "status": "Ready" if not monthly.empty else "Blocked",
+            "detail": "Monthly revenue, accessory units, wholesale denominator, PNVW, and accessory units per vehicle are generated.",
+        },
+        {
+            "step": "6. Forecasting readiness",
+            "status": "Caution",
+            "detail": (
+                "Revenue and PNVW are usable now; quantity-based forecasts should be treated as provisional until invoice files validate INST_QT."
+                if wholesale_bundle
+                else "Wholesale denominator is missing, so PNVW and penetration-style metrics are not available."
+            ),
+        },
+    ]
+
+
+def _build_company_eda(
+    filtered_df: pd.DataFrame,
+    cols: dict[str, str | None],
+    monthly: pd.DataFrame,
+) -> dict[str, Any]:
+    model_code_col = cols["modelCode"]
+    part_col = cols["partDescription"] or cols["partNumber"]
+    revenue_col = cols["revenue"]
+    qty_col = cols["quantity"]
+
+    monthly_rows = []
+    if not monthly.empty:
+        for row in monthly.to_dict("records"):
+            monthly_rows.append(
+                {
+                    "month": row["monthLabel"],
+                    "revenue": _safe_float(row["revenue"]),
+                    "quantity": _safe_float(row["quantity"]),
+                    "wholesaleUnits": _safe_float(row["wholesaleUnits"]),
+                    "pnvw": _safe_float(row["pnvw"]),
+                    "accessoryUnitsPerVehicle": _safe_float(row["accessoryUnitsPerVehicle"]),
+                }
+            )
+
+    top_model_codes = []
+    if model_code_col and revenue_col and model_code_col in filtered_df.columns and revenue_col in filtered_df.columns:
+        grouped = (
+            filtered_df.assign(__revenue=pd.to_numeric(filtered_df[revenue_col], errors="coerce").fillna(0.0))
+            .groupby(model_code_col)["__revenue"]
+            .sum()
+            .sort_values(ascending=False)
+            .head(8)
+        )
+        top_model_codes = [{"name": str(index), "value": float(value)} for index, value in grouped.items()]
+
+    top_parts = []
+    if part_col and revenue_col and part_col in filtered_df.columns and revenue_col in filtered_df.columns:
+        grouped = (
+            filtered_df.assign(__revenue=pd.to_numeric(filtered_df[revenue_col], errors="coerce").fillna(0.0))
+            .groupby(part_col)["__revenue"]
+            .sum()
+            .sort_values(ascending=False)
+            .head(8)
+        )
+        top_parts = [{"name": str(index), "value": float(value)} for index, value in grouped.items()]
+
+    notes = [
+        "EDA checks whether the data is complete, linkable, and stable enough before forecasting.",
+        "Model code is the preferred bridge key because model names can duplicate across trims or brands.",
+        "PNVW should be watched alongside total revenue so demand is normalized by vehicle wholesale volume.",
+    ]
+    if qty_col:
+        notes.append("INST_QT remains a caution field from meeting notes; use revenue and PNVW as the primary reporting layer until invoice files arrive.")
+
+    return {
+        "monthly": monthly_rows,
+        "topModelCodes": top_model_codes,
+        "topParts": top_parts,
+        "notes": notes,
+    }
+
+
+def _company_brand_series(series: pd.Series) -> pd.Series:
+    mapping = {"K": "KUS", "H": "HMA + GMA"}
+    return series.fillna("").astype(str).str.strip().map(mapping).fillna(series.fillna("").astype(str))
+
+
+def _wholesale_brand_code_series(series: pd.Series) -> pd.Series:
+    clean = series.fillna("").astype(str).str.strip()
+    return clean.map({"KUS": "K", "HMA": "H", "GMA": "H"}).fillna(clean)
+
+
+def _coverage_text(value: float | None) -> str:
+    if value is None:
+        return "No model-code bridge could be measured."
+    return f"{value:.1f}% of sales model codes were found in wholesale Model Code."
+
+
+def _brand_counts_text(counts: dict[str, int]) -> str:
+    if not counts:
+        return "none"
+    return ", ".join(f"{key}={value:,}" for key, value in counts.items())
+
+
+def _safe_float(value: Any) -> float | None:
+    if value is None or pd.isna(value):
+        return None
+    return float(value)
 
 
 def _build_field_classification(bundle: DatasetBundle) -> dict[str, list[dict[str, Any]]]:

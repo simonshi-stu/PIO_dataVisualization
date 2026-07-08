@@ -178,6 +178,37 @@ NEXT_PUBLIC_API_BASE_URL=http://127.0.0.1:8000
 ---
 ---
 
+## 2026-07-08 已实现内容补充
+
+### Data Pipeline
+- Excel 上传后会创建 workbook workspace，并保留原始 workbook 文件。
+- 相同 Excel 文件再次上传时，会通过文件 hash 复用已有 workbook id，避免重复解析同一份文件。
+- 后端会为工作表生成可复用的 bundle cache，用于后续分页、透视、异常检测、预测和分析页面读取。
+
+### Data Dictionary
+- 新增公司分析层的数据字典输出，用于解释关键字段的业务含义、验证状态和证据。
+- 已纳入本阶段确认的字段定义：
+  - `PIS_SERI` 对应 wholesale 表中的 model code，用于连接销售表和整车 wholesale 表。
+  - `PIS_CMP_KND` 中 `K` 表示 KUS，`H` 表示 GMA / HMA。
+  - `SumOfPIS_CRP_CFM_PRI` 表示 `SumOfPIS_INST_QT` 对应的总价格。
+  - `SumOfPIS_CRP_CFM_PRI / SumOfPIS_INST_QT` 表示单个 accessory 的平均价格。
+
+### EDA Dashboard
+- Data Workspace 下新增 `Pipeline & EDA` 页面，用于展示 pipeline 状态、model-code bridge、EDA notes、月度趋势和排行。
+- `Pipeline & EDA` 会在用户进入该子页面时按需请求分析结果，普通 Data Table / Visual Charts 请求不会重复计算 EDA。
+- EDA 图表包括月度 PIO revenue / PNVW，以及 accessory units 与 wholesale denominator 的对比。
+- 排行视图包括 top model codes by revenue 和 top accessories by revenue。
+
+### Key Metrics Layer
+- 新增 PNVW、wholesale denominator、average accessory price、accessory units per vehicle 等业务指标。
+- 指标基于销售表与 wholesale 表的 model code 连接结果计算。
+- Model code 连接逻辑限定在 `Pipeline & EDA` 分析层，避免影响原有 Pivot Table、Forecast Center 和 AI Analyst 的通用数据路径。
+
+### Local Verification
+- 本地前端服务已通过 `http://127.0.0.1:3000` 验证。
+- 本地后端服务已通过 `http://127.0.0.1:8000/docs` 验证。
+- 前端 TypeScript 检查已通过：`tsc --noEmit --incremental false`。
+
 # English Version
 
 [中文](#pio-demand-intelligence-platform) | **English**
@@ -373,6 +404,39 @@ V1 is the data-preparation and field-classification foundation. Planned modules:
 - [ ] **Forecast Center** — generate next-month and next-year demand forecasts
 - [ ] **Penetration Analysis** — calculate part fitment penetration against vehicle wholesale data
 - [ ] **Inventory Recommendations** — produce replenishment suggestions from forecast output
+
+---
+
+## 2026-07-08 Implemented Additions
+
+### Data Pipeline
+- After an Excel upload, the app creates a workbook workspace and keeps the original workbook file.
+- When the same Excel file is uploaded again, the backend reuses the existing workbook id through a file hash instead of parsing the same file again.
+- The backend creates reusable worksheet bundle caches for pagination, pivoting, anomaly detection, forecasting, and analysis pages.
+
+### Data Dictionary
+- Added a company analysis data dictionary layer that explains key fields, validation status, and supporting evidence.
+- Included the column definitions confirmed for this phase:
+  - `PIS_SERI` maps to the model code in the wholesale table and is used to connect the sales table with the vehicle wholesale table.
+  - `PIS_CMP_KND` uses `K` for KUS and `H` for GMA / HMA.
+  - `SumOfPIS_CRP_CFM_PRI` is the total price corresponding to `SumOfPIS_INST_QT`.
+  - `SumOfPIS_CRP_CFM_PRI / SumOfPIS_INST_QT` is the average price per accessory.
+
+### EDA Dashboard
+- Added a `Pipeline & EDA` page under Data Workspace for pipeline status, model-code bridge validation, EDA notes, monthly trends, and rankings.
+- `Pipeline & EDA` requests the analysis result on demand when the user opens that sub-page, so regular Data Table / Visual Charts requests do not recompute EDA.
+- EDA charts include monthly PIO revenue / PNVW and accessory units versus the wholesale denominator.
+- Ranking views include top model codes by revenue and top accessories by revenue.
+
+### Key Metrics Layer
+- Added business metrics for PNVW, wholesale denominator, average accessory price, and accessory units per vehicle.
+- Metrics are calculated from the model-code linkage between the sales table and wholesale table.
+- The model-code linkage is scoped to the `Pipeline & EDA` analysis layer so the existing Pivot Table, Forecast Center, and AI Analyst data paths remain unchanged.
+
+### Local Verification
+- Frontend verified locally at `http://127.0.0.1:3000`.
+- Backend verified locally at `http://127.0.0.1:8000/docs`.
+- Frontend TypeScript check passed with `tsc --noEmit --incremental false`.
 
 ---
 

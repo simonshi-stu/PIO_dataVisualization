@@ -45,7 +45,9 @@ import {
   WorkbookMeta,
   WorkspacePayload,
   TableState,
+  compactNumber,
   defaultTableState,
+  formatDecimal,
   forecastChartOption,
   formatMetric,
   chartOption,
@@ -70,6 +72,7 @@ export default function WorkspacePage({ params }: WorkspacePageProps) {
   const [loadingMsg, setLoadingMsg] = useState("Restoring workspace\u2026");
   const [tableLoading, setTableLoading] = useState(false);
   const [activeTab, setActiveTab] = useState("data");
+  const [dataSubTab, setDataSubTab] = useState("overview");
   const [tableState, setTableState] = useState<TableState>(defaultTableState);
   const [visibleColumns, setVisibleColumns] = useState<string[]>([]);
   const [columnOrder, setColumnOrder] = useState<string[]>([]);
@@ -78,6 +81,7 @@ export default function WorkspacePage({ params }: WorkspacePageProps) {
   const [chartFilterState, setChartFilterState] = useState<TableState>(defaultTableState);
   const [chartData, setChartData] = useState<WorkspacePayload | null>(null);
   const [chartLoading, setChartLoading] = useState(false);
+  const [companyAnalysisLoading, setCompanyAnalysisLoading] = useState(false);
   const [anomalyData, setAnomalyData] = useState<AnomalyCenterPayload | null>(null);
   const [anomalyLoading, setAnomalyLoading] = useState(false);
   const [forecastData, setForecastData] = useState<ForecastPayload | null>(null);
@@ -180,8 +184,17 @@ export default function WorkspacePage({ params }: WorkspacePageProps) {
     };
   }, [id]);
 
-  async function loadWorkspaceData(sheetName: string, state: TableState, silent = false) {
+  async function loadWorkspaceData(
+    sheetName: string,
+    state: TableState,
+    silent = false,
+    includeCompanyAnalysis = dataSubTab === "pipeline-eda"
+  ) {
     const params = buildWorkspaceParams(state);
+    if (includeCompanyAnalysis) {
+      params.set("include_company_analysis", "true");
+      setCompanyAnalysisLoading(true);
+    }
     if (!silent) {
       setTableLoading(true);
     }
@@ -240,6 +253,9 @@ export default function WorkspacePage({ params }: WorkspacePageProps) {
     } finally {
       if (!silent) {
         setTableLoading(false);
+      }
+      if (includeCompanyAnalysis) {
+        setCompanyAnalysisLoading(false);
       }
     }
   }
@@ -598,6 +614,156 @@ export default function WorkspacePage({ params }: WorkspacePageProps) {
     "Which parts look like structural demand drops rather than normal monthly volatility?",
     "Which alerts are explained by vehicle wholesale movement versus part-specific factors?",
   ];
+  const majorTabLabel = (
+    kind: "data" | "forecast" | "agent",
+    title: string,
+    description: string
+  ) => {
+    const Icon = kind === "data" ? TableOutlined : kind === "forecast" ? AreaChartOutlined : PartitionOutlined;
+    return (
+      <div className="workspace-tab-label">
+        <span className="workspace-tab-icon">
+          <Icon />
+        </span>
+        <span>
+          <span className="workspace-tab-title">{title}</span>
+          <span className="workspace-tab-copy">{description}</span>
+        </span>
+      </div>
+    );
+  };
+  const subTabLabel = (title: string, kicker: string) => (
+    <div className="workspace-subtab-label">
+      <span className="workspace-subtab-title">{title}</span>
+      <span className="workspace-subtab-copy">{kicker}</span>
+    </div>
+  );
+  const companyAnalysis = workspace?.companyAnalysis;
+  const companyMonthly = companyAnalysis?.eda.monthly ?? [];
+  const companyMonthlyOption = {
+    backgroundColor: "transparent",
+    animationDuration: 600,
+    grid: { left: 56, right: 56, top: 58, bottom: 42 },
+    tooltip: {
+      trigger: "axis",
+      backgroundColor: "#101725",
+      borderWidth: 0,
+      textStyle: { color: "#f8fbff" },
+    },
+    legend: {
+      right: 10,
+      top: 8,
+      textStyle: { color: "#607087" },
+    },
+    xAxis: {
+      type: "category",
+      data: companyMonthly.map((row) => row.month),
+      axisLine: { lineStyle: { color: "#d7e2ef" } },
+      axisLabel: { color: "#607087" },
+    },
+    yAxis: [
+      {
+        type: "value",
+        name: "Revenue",
+        splitLine: { lineStyle: { color: "#e5ecf5" } },
+        axisLabel: { color: "#607087", formatter: (value: number) => compactNumber(value) },
+      },
+      {
+        type: "value",
+        name: "PNVW",
+        splitLine: { show: false },
+        axisLabel: { color: "#607087", formatter: (value: number) => `$${formatDecimal(value, 0)}` },
+      },
+    ],
+    title: {
+      text: "Monthly PIO revenue and PNVW",
+      left: 0,
+      top: 8,
+      textStyle: {
+        color: "#122033",
+        fontWeight: 700,
+        fontSize: 15,
+        fontFamily: "Manrope, sans-serif",
+      },
+    },
+    series: [
+      {
+        name: "PIO revenue",
+        type: "bar",
+        data: companyMonthly.map((row) => row.revenue),
+        itemStyle: { color: "#2054f4", borderRadius: [8, 8, 0, 0] },
+        barMaxWidth: 28,
+      },
+      {
+        name: "PNVW",
+        type: "line",
+        yAxisIndex: 1,
+        data: companyMonthly.map((row) => row.pnvw),
+        smooth: true,
+        symbolSize: 7,
+        itemStyle: { color: "#f97316" },
+        lineStyle: { color: "#f97316", width: 3 },
+      },
+    ],
+  };
+  const companyVolumeOption = {
+    backgroundColor: "transparent",
+    animationDuration: 600,
+    grid: { left: 56, right: 24, top: 58, bottom: 42 },
+    tooltip: {
+      trigger: "axis",
+      backgroundColor: "#101725",
+      borderWidth: 0,
+      textStyle: { color: "#f8fbff" },
+    },
+    legend: {
+      right: 10,
+      top: 8,
+      textStyle: { color: "#607087" },
+    },
+    xAxis: {
+      type: "category",
+      data: companyMonthly.map((row) => row.month),
+      axisLine: { lineStyle: { color: "#d7e2ef" } },
+      axisLabel: { color: "#607087" },
+    },
+    yAxis: {
+      type: "value",
+      splitLine: { lineStyle: { color: "#e5ecf5" } },
+      axisLabel: { color: "#607087", formatter: (value: number) => compactNumber(value) },
+    },
+    title: {
+      text: "Accessory units vs wholesale denominator",
+      left: 0,
+      top: 8,
+      textStyle: {
+        color: "#122033",
+        fontWeight: 700,
+        fontSize: 15,
+        fontFamily: "Manrope, sans-serif",
+      },
+    },
+    series: [
+      {
+        name: "Accessory units",
+        type: "line",
+        data: companyMonthly.map((row) => row.quantity),
+        smooth: true,
+        symbolSize: 6,
+        itemStyle: { color: "#2054f4" },
+        lineStyle: { color: "#2054f4", width: 3 },
+      },
+      {
+        name: "Wholesale vehicles",
+        type: "line",
+        data: companyMonthly.map((row) => row.wholesaleUnits),
+        smooth: true,
+        symbolSize: 6,
+        itemStyle: { color: "#16a34a" },
+        lineStyle: { color: "#16a34a", width: 3 },
+      },
+    ],
+  };
 
   return (
     <main className="page-shell">
@@ -657,7 +823,7 @@ export default function WorkspacePage({ params }: WorkspacePageProps) {
             items={[
               {
                 key: "data",
-                label: "Data Workspace",
+                label: majorTabLabel("data", "Data Workspace", "Inspect and shape the source slice"),
                 children: (
                   <div className="major-tab-stack">
                     <Card className="content-card major-tab-intro">
@@ -672,11 +838,17 @@ export default function WorkspacePage({ params }: WorkspacePageProps) {
                     </Card>
                     <Tabs
                       className="workspace-subtabs"
-                      defaultActiveKey="overview"
+                      activeKey={dataSubTab}
+                      onChange={(key) => {
+                        setDataSubTab(key);
+                        if (key === "pipeline-eda" && workspace && !workspace.companyAnalysis) {
+                          loadWorkspaceData(workspace.sheetName, tableState, true, true);
+                        }
+                      }}
                       items={[
               {
                 key: "overview",
-                label: "Overview",
+                label: subTabLabel("Overview", "SUMMARY"),
                 children: (
                   <div className="tab-stack">
                     <Row gutter={[18, 18]}>
@@ -836,8 +1008,235 @@ export default function WorkspacePage({ params }: WorkspacePageProps) {
                 ),
               },
               {
+                key: "pipeline-eda",
+                label: subTabLabel("Pipeline & EDA", "PROFILE"),
+                children: (
+                  <div className="tab-stack">
+                    {companyAnalysis ? (
+                      <>
+                        <Row gutter={[18, 18]}>
+                          <Col xs={24} md={12} xl={6}>
+                            <Card className="metric-card">
+                              <Statistic title="PNVW ($/car)" value={formatMetric(companyAnalysis.keyMetrics.pnvw, true)} />
+                            </Card>
+                          </Col>
+                          <Col xs={24} md={12} xl={6}>
+                            <Card className="metric-card">
+                              <Statistic title="Wholesale denominator" value={formatMetric(companyAnalysis.keyMetrics.wholesaleUnits)} />
+                            </Card>
+                          </Col>
+                          <Col xs={24} md={12} xl={6}>
+                            <Card className="metric-card">
+                              <Statistic title="Avg accessory price" value={formatMetric(companyAnalysis.keyMetrics.averageAccessoryPrice, true)} />
+                            </Card>
+                          </Col>
+                          <Col xs={24} md={12} xl={6}>
+                            <Card className="metric-card">
+                              <Statistic
+                                title="Accessory units / car"
+                                value={formatDecimal(companyAnalysis.keyMetrics.accessoryUnitsPerVehicle, 2)}
+                              />
+                            </Card>
+                          </Col>
+                        </Row>
+
+                        <Row gutter={[18, 18]}>
+                          <Col xs={24} xl={9}>
+                            <Card className="content-card" title="Data pipeline status" style={{ height: "100%" }}>
+                              <div className="pipeline-list">
+                                {companyAnalysis.pipeline.map((item) => (
+                                  <div key={item.step} className="pipeline-step">
+                                    <div className="pipeline-step-top">
+                                      <strong>{item.step}</strong>
+                                      <Tag
+                                        color={
+                                          item.status === "Ready"
+                                            ? "green"
+                                            : item.status === "Caution"
+                                              ? "gold"
+                                              : item.status === "Blocked"
+                                                ? "red"
+                                                : "blue"
+                                        }
+                                      >
+                                        {item.status}
+                                      </Tag>
+                                    </div>
+                                    <Text type="secondary">{item.detail}</Text>
+                                  </div>
+                                ))}
+                              </div>
+                            </Card>
+                          </Col>
+
+                          <Col xs={24} xl={7}>
+                            <Card className="content-card" title="Model-code bridge" style={{ height: "100%" }}>
+                              <div className="health-grid" style={{ gridTemplateColumns: "1fr 1fr" }}>
+                                <div>
+                                  <span className="health-label">Sales codes</span>
+                                  <strong>{companyAnalysis.joinValidation.modelCode.salesCodeCount}</strong>
+                                </div>
+                                <div>
+                                  <span className="health-label">Wholesale codes</span>
+                                  <strong>{companyAnalysis.joinValidation.modelCode.wholesaleCodeCount}</strong>
+                                </div>
+                                <div>
+                                  <span className="health-label">Matched codes</span>
+                                  <strong>{companyAnalysis.joinValidation.modelCode.matchedCodeCount}</strong>
+                                </div>
+                                <div>
+                                  <span className="health-label">Coverage</span>
+                                  <strong>
+                                    {companyAnalysis.joinValidation.modelCode.coveragePct !== null
+                                      ? `${companyAnalysis.joinValidation.modelCode.coveragePct.toFixed(1)}%`
+                                      : "N/A"}
+                                  </strong>
+                                </div>
+                              </div>
+                              {companyAnalysis.joinValidation.modelCode.unmatchedSalesCodes.length ? (
+                                <Alert
+                                  className="health-alert"
+                                  type="warning"
+                                  showIcon
+                                  message={`Unmatched sales code(s): ${companyAnalysis.joinValidation.modelCode.unmatchedSalesCodes.join(", ")}`}
+                                />
+                              ) : null}
+                            </Card>
+                          </Col>
+
+                          <Col xs={24} xl={8}>
+                            <Card className="content-card" title="EDA focus" style={{ height: "100%" }}>
+                              <div className="summary-stack">
+                                {companyAnalysis.eda.notes.map((line) => (
+                                  <div key={line} className="summary-row">
+                                    <span className="summary-dot" />
+                                    <span>{line}</span>
+                                  </div>
+                                ))}
+                              </div>
+                            </Card>
+                          </Col>
+                        </Row>
+
+                        <Card className="content-card" title="Data dictionary and validation">
+                          <Table
+                            size="small"
+                            rowKey={(record) => `${record.source}-${record.field}`}
+                            pagination={false}
+                            dataSource={companyAnalysis.dictionary}
+                            columns={[
+                              {
+                                title: "Field",
+                                dataIndex: "field",
+                                width: 170,
+                                render: (value: string, record) => (
+                                  <div>
+                                    <Text strong>{value}</Text>
+                                    <div style={{ color: "#8a9bb2", fontSize: 12 }}>{record.source}</div>
+                                  </div>
+                                ),
+                              },
+                              {
+                                title: "Business meaning",
+                                dataIndex: "businessName",
+                                width: 210,
+                              },
+                              {
+                                title: "Definition",
+                                dataIndex: "definition",
+                              },
+                              {
+                                title: "Status",
+                                dataIndex: "status",
+                                width: 120,
+                                render: (value: string) => (
+                                  <Tag color={value === "Verified" ? "green" : value === "Caution" ? "gold" : "blue"}>
+                                    {value}
+                                  </Tag>
+                                ),
+                              },
+                              {
+                                title: "Evidence",
+                                dataIndex: "evidence",
+                                width: 280,
+                              },
+                            ]}
+                          />
+                        </Card>
+
+                        <Row gutter={[18, 18]}>
+                          <Col xs={24} xl={12}>
+                            <Card className="chart-card" style={{ height: "100%" }}>
+                              {companyMonthly.length ? (
+                                <ReactECharts option={companyMonthlyOption} style={{ height: 360 }} />
+                              ) : (
+                                <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="Monthly PNVW is not available for this worksheet." />
+                              )}
+                            </Card>
+                          </Col>
+                          <Col xs={24} xl={12}>
+                            <Card className="chart-card" style={{ height: "100%" }}>
+                              {companyMonthly.length ? (
+                                <ReactECharts option={companyVolumeOption} style={{ height: 360 }} />
+                              ) : (
+                                <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="Monthly volume bridge is not available for this worksheet." />
+                              )}
+                            </Card>
+                          </Col>
+                        </Row>
+
+                        <Row gutter={[18, 18]}>
+                          <Col xs={24} xl={12}>
+                            <Card className="content-card" title="Top model codes by revenue">
+                              {companyAnalysis.eda.topModelCodes.length ? (
+                                <div className="rank-list">
+                                  {companyAnalysis.eda.topModelCodes.map((item, index) => (
+                                    <div key={item.name} className="rank-row">
+                                      <span>{index + 1}. Model code {item.name}</span>
+                                      <strong>{formatMetric(item.value, true)}</strong>
+                                    </div>
+                                  ))}
+                                </div>
+                              ) : (
+                                <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="No model-code ranking available." />
+                              )}
+                            </Card>
+                          </Col>
+                          <Col xs={24} xl={12}>
+                            <Card className="content-card" title="Top accessories by revenue">
+                              {companyAnalysis.eda.topParts.length ? (
+                                <div className="rank-list">
+                                  {companyAnalysis.eda.topParts.map((item, index) => (
+                                    <div key={item.name} className="rank-row">
+                                      <span>{index + 1}. {item.name}</span>
+                                      <strong>{formatMetric(item.value, true)}</strong>
+                                    </div>
+                                  ))}
+                                </div>
+                              ) : (
+                                <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="No accessory ranking available." />
+                              )}
+                            </Card>
+                          </Col>
+                        </Row>
+                      </>
+                    ) : (
+                      <Card className="content-card">
+                        {companyAnalysisLoading ? (
+                          <div style={{ minHeight: 180, display: "grid", placeItems: "center" }}>
+                            <Spin tip="Building Pipeline & EDA..." />
+                          </div>
+                        ) : (
+                          <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="Company pipeline analysis is not available for this worksheet." />
+                        )}
+                      </Card>
+                    )}
+                  </div>
+                ),
+              },
+              {
                 key: "pivot",
-                label: "Pivot Table",
+                label: subTabLabel("Pivot Table", "CROSS-TAB"),
                 children: (
                   <div className="tab-stack">
                     {(() => {
@@ -1087,7 +1486,7 @@ export default function WorkspacePage({ params }: WorkspacePageProps) {
               },
               {
                 key: "table",
-                label: "Data Table",
+                label: subTabLabel("Data Table", "RECORDS"),
                 children: (
                   <div className="tab-stack">
                     <Card className="content-card">
@@ -1239,7 +1638,7 @@ export default function WorkspacePage({ params }: WorkspacePageProps) {
               },
               {
                 key: "insights",
-                label: "Visual Charts",
+                label: subTabLabel("Visual Charts", "TRENDS"),
                 children: (
                   <div className="tab-stack">
                     {chartData && (
@@ -1429,7 +1828,7 @@ export default function WorkspacePage({ params }: WorkspacePageProps) {
               },
               {
                 key: "forecasting",
-                label: "Forecast Center",
+                label: majorTabLabel("forecast", "Forecast Center", "Backtest, explain, and export forecasts"),
                 children: (
                   <div className="major-tab-stack">
                     <Card className="content-card major-tab-intro">
@@ -1448,7 +1847,7 @@ export default function WorkspacePage({ params }: WorkspacePageProps) {
                       items={[
               {
                 key: "anomaly",
-                label: "Anomaly Center",
+                label: subTabLabel("Anomaly Center", "SIGNALS"),
                 children: (
                   <div className="tab-stack">
                     <Card className="content-card">
@@ -1595,7 +1994,7 @@ export default function WorkspacePage({ params }: WorkspacePageProps) {
                                     </div>
                                   </Col>
                                   <Col xs={24} xl={8}>
-                                    <Card bordered={false} style={{ background: "rgba(248, 250, 255, 0.82)", height: "100%" }}>
+                                    <Card variant="borderless" style={{ background: "rgba(248, 250, 255, 0.82)", height: "100%" }}>
                                       <div style={{ fontWeight: 700, marginBottom: 10 }}>Evidence trail</div>
                                       <div className="summary-stack">
                                         {record.evidence.map((line) => (
@@ -1609,7 +2008,7 @@ export default function WorkspacePage({ params }: WorkspacePageProps) {
                                   </Col>
                                   <Col xs={24} xl={8}>
                                     <div style={{ display: "grid", gap: 16 }}>
-                                      <Card bordered={false} style={{ background: "rgba(248, 250, 255, 0.82)" }}>
+                                      <Card variant="borderless" style={{ background: "rgba(248, 250, 255, 0.82)" }}>
                                         <div style={{ fontWeight: 700, marginBottom: 10 }}>Wholesale-linked model</div>
                                         {record.wholesaleSignal ? (
                                           <div className="health-grid" style={{ gridTemplateColumns: "1fr 1fr" }}>
@@ -1642,7 +2041,7 @@ export default function WorkspacePage({ params }: WorkspacePageProps) {
                                           <Text type="secondary">No wholesale-linked model could be fit for this part with the current workbook structure.</Text>
                                         )}
                                       </Card>
-                                      <Card bordered={false} style={{ background: "rgba(248, 250, 255, 0.82)" }}>
+                                      <Card variant="borderless" style={{ background: "rgba(248, 250, 255, 0.82)" }}>
                                         <div style={{ fontWeight: 700, marginBottom: 10 }}>Brand drivers</div>
                                         {record.brandDrivers.length ? (
                                           <div className="summary-stack">
@@ -1659,7 +2058,7 @@ export default function WorkspacePage({ params }: WorkspacePageProps) {
                                           <Text type="secondary">No brand-level shift surfaced in this slice.</Text>
                                         )}
                                       </Card>
-                                      <Card bordered={false} style={{ background: "rgba(248, 250, 255, 0.82)" }}>
+                                      <Card variant="borderless" style={{ background: "rgba(248, 250, 255, 0.82)" }}>
                                         <div style={{ fontWeight: 700, marginBottom: 10 }}>Model drivers</div>
                                         {record.modelDrivers.length ? (
                                           <div className="summary-stack">
@@ -1698,7 +2097,7 @@ export default function WorkspacePage({ params }: WorkspacePageProps) {
               },
               {
                 key: "forecast",
-                label: "Forecast Center",
+                label: subTabLabel("Forecast Center", "OUTPUT"),
                 children: (
                   <div className="tab-stack">
                     <Card className="content-card">
