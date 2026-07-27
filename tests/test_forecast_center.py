@@ -95,9 +95,29 @@ class ForecastCenterTests(unittest.TestCase):
         self.assertEqual(payload["summary"]["reconciliation"]["status"], "PASS")
         self.assertLessEqual(len(payload["topAccessories"]), 10)
         self.assertTrue(all(record["plc"] in {"Floor Mat", "Cargo Tray"} for record in payload["records"]))
-        self.assertEqual({record["brand"] for record in payload["brandRecords"]}, {"H", "K"})
+        self.assertEqual({record["brand"] for record in payload["brandRecords"]}, {"HMA", "KUS"})
+        self.assertEqual(
+            payload["summary"]["accuracyScope"]["evaluatedGrain"],
+            "month × selected official brand anchor(s) from HMA/GMA/KUS",
+        )
+        self.assertIn("day-of-month cutoff is not a working-day count", payload["summary"]["periodExplanation"])
+        self.assertIn(
+            "current business rule",
+            payload["summary"]["anchorPolicy"]["denominatorPolicy"]["HMA"],
+        )
+        unit_revenue = {
+            (record["modelName"], record["plc"]): record["expectedUnitRevenue"]
+            for record in payload["modelPlcRecords"]
+            if record["allocationRoute"] == "regular_allocation"
+        }
+        self.assertAlmostEqual(unit_revenue[("Elantra", "Floor Mat")], 80.0, places=6)
+        self.assertAlmostEqual(unit_revenue[("Elantra", "Cargo Tray")], 110.0, places=6)
+        self.assertAlmostEqual(unit_revenue[("Sportage", "Floor Mat")], 75.0, places=6)
+        formulas = {item["name"]: item for item in payload["summary"]["formulaCatalog"]}
+        self.assertIn("SumOfPIS_CRP_CFM_PRI", formulas["Monthly target actual"]["formula"])
+        self.assertIn("recent-6", formulas["Exact-part unit revenue"]["formula"])
 
-    def test_wholesale_consolidates_hma_and_gma(self) -> None:
+    def test_wholesale_keeps_hma_gma_and_kus_as_separate_anchors(self) -> None:
         payload = build_forecast_center(
             self.facts,
             self.working_days,
@@ -108,10 +128,90 @@ class ForecastCenterTests(unittest.TestCase):
             latest_sales_month_is_complete=False,
             latest_sales_date=pd.Timestamp("2026-07-22"),
         )
-        self.assertEqual({record["brand"] for record in payload["brandRecords"]}, {"H", "K"})
+        self.assertEqual(
+            {record["brand"] for record in payload["brandRecords"]},
+            {"HMA", "GMA", "KUS"},
+        )
         self.assertEqual(payload["summary"]["reconciliation"]["status"], "PASS")
         self.assertEqual(payload["summary"]["forecastMonths"][0], "2026-07")
         self.assertEqual(payload["summary"]["nowcastMonths"], ["2026-07"])
+
+    def test_wholesale_models_stopped_before_current_year_are_zero(self) -> None:
+        stopped = pd.DataFrame(
+            {
+                "month": ["2023-01", "2025-07", "2023-01", "2025-10"],
+                "brand": ["KUS", "KUS", "HMA", "HMA"],
+                "modelName": ["Stinger", "Stinger", "Nexo", "Nexo"],
+                "modelKey": ["STINGER", "STINGER", "NEXO", "NEXO"],
+                "wholesaleUnits": [40.0, 30.0, 25.0, 20.0],
+            }
+        )
+        wholesale = pd.concat([self.wholesale, stopped], ignore_index=True)
+
+        payload = build_forecast_center(
+            self.facts,
+            self.working_days,
+            wholesale,
+            metric="wholesale_quantity",
+            level="model",
+            horizon=2,
+            latest_sales_month_is_complete=False,
+            latest_sales_date=pd.Timestamp("2026-07-22"),
+            include_all_records=True,
+        )
+        stopped_records = {
+            record["modelName"]: record
+            for record in payload["modelRecords"]
+            if record["modelName"] in {"Nexo", "Stinger"}
+        }
+
+        self.assertEqual(stopped_records["Nexo"]["allocationRoute"], "excluded_lifecycle")
+        self.assertEqual(stopped_records["Stinger"]["allocationRoute"], "excluded_lifecycle")
+        self.assertTrue(
+            all(
+                forecast["value"] == 0
+                for record in stopped_records.values()
+                for forecast in record["forecast"]
+            )
+        )
+        self.assertEqual(payload["summary"]["reconciliation"]["status"], "PASS")
+
+    def test_reference_portfolio_is_revenue_only_and_brand_specific(self) -> None:
+        payload = build_forecast_center(
+            self.facts,
+            self.working_days,
+            self.wholesale,
+            metric="revenue",
+            level="brand",
+            horizon=2,
+            model_strategy="reference_portfolio",
+            latest_sales_month_is_complete=False,
+            latest_sales_date=pd.Timestamp("2026-07-22"),
+        )
+        methods = {
+            record["brand"]: record["selectedModel"]
+            for record in payload["brandRecords"]
+        }
+
+        self.assertTrue(methods["HMA"].startswith("hw_add_add__heuristic"))
+        self.assertEqual(methods["KUS"], "working_day_adjusted_seasonal")
+        self.assertEqual(
+            payload["summary"]["modelGovernance"]["requestedStrategy"],
+            "reference_portfolio",
+        )
+        self.assertEqual(
+            payload["summary"]["modelGovernance"]["referenceMethodStatus"],
+            "validated_implementation_applied_to_unvalidated_source",
+        )
+        with self.assertRaisesRegex(ValueError, "only for Revenue"):
+            build_forecast_center(
+                self.facts,
+                self.working_days,
+                self.wholesale,
+                metric="quantity",
+                level="brand",
+                model_strategy="reference_portfolio",
+            )
 
     def test_exact_parts_allocate_to_plc_parent(self) -> None:
         payload = build_forecast_center(
@@ -143,6 +243,40 @@ class ForecastCenterTests(unittest.TestCase):
             children[key] = children.get(key, 0.0) + record["value"]
         for key, value in parent.items():
             self.assertAlmostEqual(children[key], value, places=6)
+
+    def test_low_volume_and_new_models_are_routed_without_breaking_reconciliation(self) -> None:
+        facts = self.facts.copy()
+        low = facts[facts["modelName"] == "Elantra"].copy()
+        low["entityKey"] = "H::LOW VOLUME"
+        low["modelName"] = "Low Volume"
+        low["installationQuantity"] = 0.1
+        low["pioRevenue"] = 8.0
+        low["lifecycleStatus"] = "Active"
+        low["lifecycleStatusCode"] = "active"
+        new = facts[facts["modelName"] == "Elantra"].tail(8).copy()
+        new["entityKey"] = "H::NEW EV"
+        new["modelName"] = "New EV"
+        new["installationQuantity"] = 30.0
+        new["pioRevenue"] = 2400.0
+        new["lifecycleStatus"] = "New / limited history"
+        new["lifecycleStatusCode"] = "new"
+        routed = pd.concat([facts, low, new], ignore_index=True)
+
+        payload = build_forecast_center(
+            routed,
+            self.working_days,
+            self.wholesale,
+            metric="quantity",
+            level="model",
+            horizon=2,
+            latest_sales_month_is_complete=False,
+            latest_sales_date=pd.Timestamp("2026-07-22"),
+            include_all_records=True,
+        )
+        routes = {record["modelName"]: record["allocationRoute"] for record in payload["modelRecords"]}
+        self.assertEqual(routes["Low Volume"], "excluded_low_volume")
+        self.assertEqual(routes["New EV"], "new_model_proxy")
+        self.assertEqual(payload["summary"]["reconciliation"]["status"], "PASS")
 
     def test_sop_workbook_has_governed_sheets_and_formulas(self) -> None:
         payloads = {}
