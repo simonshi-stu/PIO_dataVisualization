@@ -24,7 +24,7 @@ PIO Demand Intelligence Platform（V1）是一个面向汽车零部件规划团�
 
 V1 覆盖从 Excel 导入、可信 EDA 到分层预测和企业导出的完整主流程：**先建立可审计的数据与品牌口径，再生成可解释、可对账的 Revenue、PIO Quantity 和 Wholesale Forecast。**
 
-平台已在当前参考工作簿的 **478,125 行 PIO 销售记录**上完成测试，所有表格浏览均采用服务端分页，不会将完整数据集加载进浏览器。
+当前规范工作簿包含 **480,984 行 PIO 销售记录**（截至 2026-07-28）；已登记的 7/22 回测指标在新来源上重跑前仍属于历史证据。所有表格浏览均采用服务端分页，不会将完整数据集加载进浏览器。
 
 ---
 
@@ -73,7 +73,7 @@ V1 覆盖从 Excel 导入、可信 EDA 到分层预测和企业导出的完整�
 ### 🧱 月度事实表与三品牌 Anchor
 - 事实表粒度为 `month × anchor brand × model × PLC × PIS_PNO`，覆盖 2023-01 至当前数据 cutoff
 - 官方 anchor 为 `HMA`、`GMA`、`KUS`；不会再把 Hyundai 与 Genesis 合并成单一 `H`
-- 当前业务口径下，三个 anchor 均使用 dealer / non-fleet wholesale；Fleet 不会加入 PIO Quantity、PIO Revenue 或 PNVW 分母
+- KUS 已批准从 2026-06 起将 Wholesale 与 Fleet 作为独立篮子，Fleet 优先分配 `PIS_MDL_YY=2027` 的 Carpet Floor Mat，随后将剩余量分配给 Wholesale；该规则需在下一次统一回测中验证后才可作为生产指标
 - 当前参考工作簿的 PIO 与 Wholesale cutoff 同步为 `2026-07-22`
 
 ### 📈 Forecast Center（分层预测）
@@ -252,7 +252,7 @@ PIO Demand Intelligence Platform (V1) is a web workspace for automotive parts pl
 
 V1 covers the primary workflow from Excel intake and governed EDA through hierarchical forecasting and enterprise export: **establish an auditable data/anchor policy first, then produce explainable and reconciled Revenue, PIO Quantity, and Wholesale forecasts.**
 
-The platform has been tested against the current reference workbook's **478,125 PIO sales rows**. All table browsing is server-side paginated — the full dataset is never loaded into the browser.
+The governed workbook now contains **480,984 PIO sales rows** through 2026-07-28. Registered 7/22 backtest metrics remain historical evidence until rerun on the new source. All table browsing is server-side paginated — the full dataset is never loaded into the browser.
 
 ---
 
@@ -301,7 +301,7 @@ The platform has been tested against the current reference workbook's **478,125 
 ### 🧱 Monthly Fact Table and Three-Anchor Policy
 - Fact grain is `month × anchor brand × model × PLC × PIS_PNO`, covering January 2023 through the current data cutoff
 - Official anchors are `HMA`, `GMA`, and `KUS`; Hyundai and Genesis are no longer collapsed into one `H` forecast anchor
-- Under the current business rule, all three anchors use dealer / non-fleet wholesale. Fleet is not added to PIO Quantity, PIO Revenue, or the PNVW denominator
+- The approved KUS rule separates Wholesale and Fleet baskets from 2026-06, allocating Fleet first for `PIS_MDL_YY=2027` Carpet Floor Mat and routing the residual to Wholesale; it must pass the next unified backtest before its metrics are treated as production-validated
 - The current reference workbook has a synchronized PIO and Wholesale cutoff of `2026-07-22`
 
 ### 📈 Forecast Center
@@ -318,7 +318,7 @@ The platform has been tested against the current reference workbook's **478,125 
 - Revenue also exposes a validated `reference_portfolio`: optimized Holt-Winters for HMA, Last-Month Revenue for GMA, and Working-Day-Adjusted Seasonal for KUS. It is limited to Revenue Brand anchors, while `Auto` remains the default
 - Candidates include naive, mean, weighted moving average, trailing-12 mean, trend, seasonal naive/mean, additive ETS, and Croston SBA. ETS needs at least 24 months; seasonal models and OLS need at least 18 months
 - Working Days is the workbook's **full-month business-day exposure**, not the calendar day number. OLS learns it as a standardized feature; other baselines and allocations use working-day ratio adjustments
-- July 2026 is a full-month nowcast composed of MTD actual through July 22 plus an estimate for the remaining month. Pure forecast begins in August 2026
+- July 2026 is a full-month nowcast composed of MTD actual through July 28 plus an estimate for the remaining month. Pure forecast begins in August 2026
 - Accuracy is independently backtested only at `month × official brand anchor`. Model, PLC, and exact-part values are reconciled allocations and do not currently claim separate model accuracy
 
 ### 📤 Output and Business Controls
