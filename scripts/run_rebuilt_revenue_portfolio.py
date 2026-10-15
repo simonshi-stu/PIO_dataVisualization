@@ -188,10 +188,7 @@ def main() -> int:
         runs,
         hma_audit,
         champion_summary,
-        registry_updated=(
-            _registry_has_champion()
-            and actual_hash == EXPERIMENT_SOURCE_HASH
-        ),
+        registry_updated=_registry_has_champion(source_hash=actual_hash),
     )
 
     output = {
@@ -429,13 +426,14 @@ def _promotion_decision(
     }
 
 
-def _registry_has_champion() -> bool:
+def _registry_has_champion(*, source_hash: str) -> bool:
     registry_path = PROJECT_ROOT / "config" / "forecast_model_registry.json"
     registry = json.loads(registry_path.read_text(encoding="utf-8"))
     return any(
         model.get("id") == "rebuilt_reference_portfolio_v1"
         and model.get("promotionStatus") == "champion"
         and model.get("productionDefault") is False
+        and model.get("reportedEvidence", {}).get("sourceHash") == source_hash
         for model in registry.get("models", [])
     )
 

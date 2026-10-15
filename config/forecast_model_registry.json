@@ -65,7 +65,7 @@
     "partialMonthPolicy": "exclude current partial month from pre-month model training and evaluate cutoff nowcast separately"
   },
   "kusChannelContract": {
-    "status": "approved_for_next_governed_implementation",
+    "status": "implemented_and_reconciled",
     "effectiveMonth": "2026-06",
     "preEffectiveRule": "vehicle wholesale volume * PNVW = KUS MPI revenue",
     "wholesaleRule": "wholesale vehicle volume * wholesale PNVW = wholesale MPI revenue",
@@ -77,7 +77,27 @@
       "modelYear": "2027"
     },
     "allocationOrder": "fleet first at 100% penetration, then residual eligible Carpet Floor Mat volume to wholesale",
-    "doubleCountingPolicy": "a vehicle and its MPI revenue may belong to exactly one basket"
+    "doubleCountingPolicy": "a vehicle and its MPI revenue may belong to exactly one basket",
+    "implementation": "pio_platform.fact_table.build_kus_channel_baskets",
+    "evidence": {
+      "sourceHash": "9ff30f6bf08f9b631042f74e8a345d36cb7e4b46981f6acbf9169279851b54b9",
+      "2026-06": {
+        "fleetVehicleVolume": 6130,
+        "fleetAllocatedCfmQuantity": 6130,
+        "fleetBasketRevenue": 454304.4223473658,
+        "fleetPenetrationCoverage": 1.0,
+        "revenueReconciliationDelta": 0.0000000001,
+        "quantityReconciliationDelta": 0.0
+      },
+      "2026-07_partial_through_0728": {
+        "fleetVehicleVolume": 7346,
+        "fleetAllocatedCfmQuantity": 7346,
+        "fleetBasketRevenue": 510224.3164314877,
+        "fleetPenetrationCoverage": 1.0,
+        "revenueReconciliationDelta": -0.0000000008,
+        "quantityReconciliationDelta": 0.0
+      }
+    }
   },
   "evaluationScopes": {
     "application_recent_h1": {
@@ -151,18 +171,18 @@
     "cutoffPolicy": "evidence may use only data known at the request cutoff"
   },
   "latestUnifiedRun": {
-    "generatedFrom": "CapStone_Sales_Data_0722+PLC.xlsx",
-    "sourceSha256": "f44048f30632e6f1d77d5336d2d313b4855e9d1cec95577b4a50f1c8f33c2c47",
+    "generatedFrom": "CapStone_Sales_Data_0722+PLC_merged_through_0728.xlsx",
+    "sourceSha256": "9ff30f6bf08f9b631042f74e8a345d36cb7e4b46981f6acbf9169279851b54b9",
     "completedTrainingThrough": "2026-06",
-    "resultPath": "outputs/backtests/unified_backtest_f44048f30632_pio-backtest-v1.json",
-    "currentSourceRerunRequired": true,
-    "validationStatus": "historical_7_22_evidence_not_validated_for_current_7_28_source",
+    "resultPath": "outputs/backtests/unified_backtest_9ff30f6bf08f_pio-backtest-v1.json",
+    "currentSourceRerunRequired": false,
+    "validationStatus": "validated_current_7_28_source",
     "commonFoldCount": 51,
     "officialTotalResults": {
       "referenceRevenueProxy": {
-        "wape": 0.09793953779347239,
-        "accuracy": 0.9020604622065276,
-        "biasPercentage": 0.021047949739834062
+        "wape": 0.10037709985878922,
+        "accuracy": 0.8996229001412108,
+        "biasPercentage": 0.020333017400054765
       },
       "currentAutoRevenue": {
         "wape": 0.10281284376206735,
@@ -192,11 +212,11 @@
         "biasPercentage": 0.026773359393689182
       },
       "referenceQuantityTotalEtsProxy": {
-        "evidenceStatus": "invalid_superseded",
-        "supersededReason": "The prior run did not pass predictor=make_predictor('ets_additive') explicitly; retain values only as audit history until a safe corrected rerun is completed.",
-        "wape": 0.08976328552451446,
-        "accuracy": 0.9102367144754855,
-        "biasPercentage": 0.012065385700036922
+        "evidenceStatus": "corrected_proxy_run",
+        "supersedes": "The prior quantity proxy metrics produced without an explicit ets_additive predictor.",
+        "wape": 0.09582773300341355,
+        "accuracy": 0.9041722669965865,
+        "biasPercentage": 0.01990875587818056
       },
       "currentAutoWholesale": {
         "wape": 0.05594073125982667,
@@ -204,7 +224,7 @@
         "biasPercentage": 0.00137438514685685
       }
     },
-    "interpretation": "On the historical 7/22 source and one common contract, the rebuilt reference Revenue portfolio was the validated champion at 6.8939% official-total WAPE. These metrics are not validated for the current 7/28 source until the unified harness is rerun. It used the validated HMA Holt-Winters candidate, GMA naive_last, and KUS working_day_adjusted_seasonal. Auto remains the website default pending explicit user approval."
+    "interpretation": "On the governed merged-through-7/28 source and one common contract, the rebuilt reference Revenue portfolio remains the validated champion at 6.8939% official-total WAPE. The rerun reproduced the historical metrics exactly: no improvement and no degradation. It uses the validated HMA Holt-Winters candidate, GMA naive_last, and KUS working_day_adjusted_seasonal. Auto remains the website default pending explicit user approval."
   },
   "latestHmaEtsExperiment": {
     "sourceSha256": "f44048f30632e6f1d77d5336d2d313b4855e9d1cec95577b4a50f1c8f33c2c47",
@@ -462,32 +482,88 @@
       }
     },
     {
-      "id": "ridge_driver_challenger",
+      "id": "tree_meta_selector_v1",
+      "displayName": "Tree Meta-Selector v1",
       "status": "challenger",
+      "productionDefault": false,
       "target": "pio_revenue",
-      "level": "brand_or_global_panel",
+      "level": "official_total_from_brand_anchors",
+      "implementation": "pretrained CPU JSON artifact; cost-sensitive shallow tree defaults to the validated anchor and permits only 0.7-0.9 anchor-weight blends that clear a nested 0.005 WAPE-gain gate",
+      "artifactVersion": "pio-ml-challenger-v2-preregistered",
+      "artifact": "config/ml_challengers/tree_meta_selector_v1.json",
+      "sourceHash": "9ff30f6bf08f9b631042f74e8a345d36cb7e4b46981f6acbf9169279851b54b9",
+      "trainingCutoff": "2026-06",
+      "evaluationScopeId": "governed_h123_24m_h1_18_h2_17_h3_16_official_total_51",
+      "nestedEvaluation": "candidate dollar absolute-error improvements use only targets strictly earlier than each outer origin; synchronized HMA/GMA/KUS panel",
       "allowedFeatures": [
-        "target_lags",
+        "completed_target_lags",
+        "rolling_target_statistics",
         "calendar_month",
         "known_working_days",
-        "lagged_wholesale",
-        "lifecycle",
-        "lagged_mix"
+        "official_anchor_identity_and_brand_interactions",
+        "governed_statistical_anchor_prediction"
       ],
-      "reportedReferenceEvidence": {
-        "horizon1Wape": 0.0781495
-      }
+      "reportedEvidence": {
+        "officialTotalWape": 0.07241686244713515,
+        "officialTotalAccuracy": 0.9275831375528648,
+        "officialTotalBiasPercentage": 0.010331218262735926,
+        "officialTotalFoldWapeStandardDeviation": 0.05986309759668777,
+        "predictionCoverage": 1.0,
+        "foldCount": 51,
+        "horizonWape": {
+          "1": 0.059742145940036004,
+          "2": 0.07336937947105313,
+          "3": 0.08559311047602922
+        },
+        "brandWape": {
+          "HMA": 0.10621192381166975,
+          "GMA": 0.14203855797275697,
+          "KUS": 0.09728692561435011
+        }
+      },
+      "promotionDecision": "not_promoted; the validated reference portfolio remains better on identical folds"
     },
     {
-      "id": "xgboost_driver_challenger",
+      "id": "elastic_net_anchor_residual_v1",
+      "displayName": "Elastic Net Anchor Residual v1",
       "status": "challenger",
+      "productionDefault": false,
       "target": "pio_revenue",
-      "level": "global_panel_preferred",
-      "reportedReferenceEvidence": {
-        "horizon1Wape": 0.0792191,
-        "comparableEtsHorizon1Wape": 0.0708,
-        "promotionDecision": "not_promoted"
-      }
+      "level": "official_total_from_brand_anchors",
+      "implementation": "pretrained CPU JSON artifact; Revenue-weighted Elastic Net competes against no correction on the last six synchronized inner origins using fixed alpha and +/-5/10/15% clip candidates",
+      "artifactVersion": "pio-ml-challenger-v2-preregistered",
+      "artifact": "config/ml_challengers/elastic_net_anchor_residual_v1.json",
+      "sourceHash": "9ff30f6bf08f9b631042f74e8a345d36cb7e4b46981f6acbf9169279851b54b9",
+      "trainingCutoff": "2026-06",
+      "evaluationScopeId": "governed_h123_24m_h1_18_h2_17_h3_16_official_total_51",
+      "nestedEvaluation": "alpha, L1 ratio, residual clip, and no-correction use Official Total WAPE on the last six synchronized origins inside each outer training window",
+      "allowedFeatures": [
+        "completed_target_lags",
+        "rolling_target_statistics",
+        "calendar_month",
+        "known_working_days",
+        "official_anchor_identity_and_brand_interactions",
+        "governed_statistical_anchor_prediction"
+      ],
+      "reportedEvidence": {
+        "officialTotalWape": 0.07045675505468779,
+        "officialTotalAccuracy": 0.9295432449453123,
+        "officialTotalBiasPercentage": 0.00975266991945376,
+        "officialTotalFoldWapeStandardDeviation": 0.05589541305253997,
+        "predictionCoverage": 1.0,
+        "foldCount": 51,
+        "horizonWape": {
+          "1": 0.06050817138659154,
+          "2": 0.06694946412263612,
+          "3": 0.08532476679737437
+        },
+        "brandWape": {
+          "HMA": 0.10063796267985357,
+          "GMA": 0.14668245979104735,
+          "KUS": 0.0950021909718981
+        }
+      },
+      "promotionDecision": "not_promoted; the validated reference portfolio remains better on identical folds"
     }
   ],
   "referenceEvidence": {
